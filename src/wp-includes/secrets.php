@@ -644,3 +644,48 @@ function _wp_secrets_list( $namespace, $network ) { // phpcs:ignore Universal.Na
 
 	return $results;
 }
+
+/**
+ * Imports a plaintext option's value as a secret, and deletes the option.
+ *
+ * The imported secret is flagged with needs_rotation: true. A value that
+ * has been sitting in wp_options is already in backups, replicas, and
+ * object caches; encrypting it now does not change that. Reporting this
+ * as a plain success would be misleading. Rotating the value - not
+ * re-importing it - is the only thing that actually fixes it.
+ *
+ * @since 7.2.0
+ *
+ * @param string $option_name The option to import and delete.
+ * @param string $secret_name Namespaced secret name to store it under.
+ * @return true|WP_Error True on success, WP_Error otherwise.
+ */
+function wp_import_secret_from_option( $option_name, $secret_name ) {
+	$option_value = get_option( $option_name );
+
+	if ( false === $option_value ) {
+		return new WP_Error( 'secret_not_found', __( 'The option to import does not exist.' ) );
+	}
+
+	if ( ! is_string( $option_value ) || '' === $option_value ) {
+		return new WP_Error( 'secret_empty_value', __( 'Secret values must be non-empty strings.' ) );
+	}
+
+	$set = wp_set_secret( $secret_name, $option_value );
+
+	if ( is_wp_error( $set ) ) {
+		return $set;
+	}
+
+	$store  = wp_secrets_get_store();
+	$raw    = $store->get( $secret_name );
+	$record = json_decode( $raw, true );
+
+	$record['needs_rotation'] = true;
+
+	$store->set( $secret_name, wp_json_encode( $record ) );
+
+	delete_option( $option_name );
+
+	return true;
+}
