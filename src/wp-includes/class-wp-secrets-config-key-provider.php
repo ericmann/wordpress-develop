@@ -42,6 +42,34 @@ class WP_Secrets_Config_Key_Provider {
 	}
 
 	/**
+	 * Resolves the previous site key, for planned key rotation.
+	 *
+	 * `WP_SECRETS_KEY_PREVIOUS` supports rotating `WP_SECRETS_KEY`: on a
+	 * site that has been running on the salts fallback, simply defining
+	 * `WP_SECRETS_KEY` for the first time is itself a rotation, from the
+	 * fallback to the constant. Since there is nothing else the previous
+	 * key could be in that case, it is resolved automatically rather
+	 * than requiring the operator to also set
+	 * `WP_SECRETS_KEY_PREVIOUS` to a value equivalent to the fallback.
+	 *
+	 * @since 7.2.0
+	 *
+	 * @return string|WP_Error 32 raw bytes, or WP_Error if no previous key
+	 *                         is available.
+	 */
+	public function get_previous_site_key() {
+		if ( defined( 'WP_SECRETS_KEY_PREVIOUS' ) ) {
+			return $this->decode_constant( WP_SECRETS_KEY_PREVIOUS );
+		}
+
+		if ( defined( 'WP_SECRETS_KEY' ) ) {
+			return $this->derive_from_salts();
+		}
+
+		return new WP_Error( 'secret_key_provider_unavailable', __( 'No previous Secrets API site key is configured.' ) );
+	}
+
+	/**
 	 * Decodes and validates the `WP_SECRETS_KEY` constant.
 	 *
 	 * @since 7.2.0

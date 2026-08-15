@@ -66,11 +66,19 @@ class WP_Secrets_Key_Manager {
 	/**
 	 * Returns the site's master key, generating and persisting one if needed.
 	 *
+	 * If the current site key fails to unwrap a stored master key, this
+	 * retries with the previous site key. On success, the master key is
+	 * transparently re-wrapped under the current key and persisted (one
+	 * option write) so the retry is not needed again. If both keys fail,
+	 * nothing is written: the stored record is left exactly as it was,
+	 * so no data is destroyed by a rotation that has not finished yet.
+	 *
 	 * @since 7.2.0
 	 *
 	 * @return string|WP_Error 32 raw bytes, or WP_Error if the site key is
 	 *                         unavailable or the stored master key does
-	 *                         not decrypt.
+	 *                         not decrypt under either the current or the
+	 *                         previous site key.
 	 */
 	public function get_master_key() {
 		$site_key = $this->key_provider->get_site_key();
@@ -85,7 +93,43 @@ class WP_Secrets_Key_Manager {
 			return $this->generate_master_key( $site_key );
 		}
 
-		return $this->unwrap_master_key( $stored, $site_key );
+		$unwrapped = $this->unwrap_master_key( $stored, $site_key );
+
+		if ( ! is_wp_error( $unwrapped ) ) {
+			return $unwrapped;
+		}
+
+		return $this->retry_with_previous_site_key( $stored, $site_key, $unwrapped );
+	}
+
+	/**
+	 * Retries unwrapping the master key with the previous site key.
+	 *
+	 * @since 7.2.0
+	 *
+	 * @param string   $stored           The raw option value.
+	 * @param string   $current_site_key 32 raw bytes.
+	 * @param WP_Error $original_error   The error from the current key attempt,
+	 *                                   returned unchanged if the previous key
+	 *                                   is also unavailable or does not work.
+	 * @return string|WP_Error 32 raw bytes, or WP_Error if unavailable.
+	 */
+	private function retry_with_previous_site_key( $stored, $current_site_key, WP_Error $original_error ) {
+		$previous_site_key = $this->key_provider->get_previous_site_key();
+
+		if ( is_wp_error( $previous_site_key ) ) {
+			return $original_error;
+		}
+
+		$unwrapped = $this->unwrap_master_key( $stored, $previous_site_key );
+
+		if ( is_wp_error( $unwrapped ) ) {
+			return $unwrapped;
+		}
+
+		$this->store_master_key( $unwrapped, $current_site_key );
+
+		return $unwrapped;
 	}
 
 	/**
