@@ -1929,6 +1929,95 @@ class WP_Site_Health {
 	}
 
 	/**
+	 * Tests whether any stored secrets fail to decrypt.
+	 *
+	 * Only names and a count are ever used here; a secret's value is
+	 * never touched by a Site Health test. The recovery path for an
+	 * undecryptable secret is re-entering its value, not any kind of
+	 * automatic repair.
+	 *
+	 * @since 7.2.0
+	 *
+	 * @return array The test results.
+	 */
+	public function get_test_secrets_undecryptable() {
+		$result = array(
+			'label'       => __( 'Undecryptable secrets' ),
+			'status'      => 'good',
+			'badge'       => array(
+				'label' => __( 'Security' ),
+				'color' => 'blue',
+			),
+			'description' => '<p>' . __( 'All stored secrets can be decrypted with the current key configuration.' ) . '</p>',
+			'actions'     => '',
+			'test'        => 'secrets_undecryptable',
+		);
+
+		$secrets = wp_list_secrets();
+
+		if ( is_wp_error( $secrets ) ) {
+			return $result;
+		}
+
+		$undecryptable_count = 0;
+
+		foreach ( $secrets as $secret ) {
+			if ( is_wp_error( wp_get_secret( $secret['name'] ) ) ) {
+				++$undecryptable_count;
+			}
+		}
+
+		if ( $undecryptable_count > 0 ) {
+			$result['status']      = 'critical';
+			$result['description'] = sprintf(
+				/* translators: %d: The number of undecryptable secrets. */
+				'<p>' . _n(
+					'%d stored secret cannot be decrypted with the current key configuration. This usually means the encryption key changed. Re-entering its value is the only way to fix it.',
+					'%d stored secrets cannot be decrypted with the current key configuration. This usually means the encryption key changed. Re-entering their values is the only way to fix it.',
+					$undecryptable_count
+				) . '</p>',
+				$undecryptable_count
+			);
+			$result['actions'] = sprintf(
+				'<p><a href="%s">%s</a></p>',
+				esc_url( admin_url( 'options-general.php?page=wp-secrets' ) ),
+				__( 'Manage secrets' )
+			);
+		}
+
+		return $result;
+	}
+
+	/**
+	 * Tests whether the Secrets API is using the salts fallback instead of a dedicated key.
+	 *
+	 * @since 7.2.0
+	 *
+	 * @return array The test results.
+	 */
+	public function get_test_secrets_salts_fallback() {
+		$result = array(
+			'label'       => __( 'Secrets API key configuration' ),
+			'status'      => 'good',
+			'badge'       => array(
+				'label' => __( 'Security' ),
+				'color' => 'blue',
+			),
+			'description' => '<p>' . __( 'A dedicated WP_SECRETS_KEY constant is configured.' ) . '</p>',
+			'actions'     => '',
+			'test'        => 'secrets_salts_fallback',
+		);
+
+		if ( ! defined( 'WP_SECRETS_KEY' ) ) {
+			$result['status']      = 'recommended';
+			$result['description'] = '<p>' . __( 'No WP_SECRETS_KEY constant is defined, so stored secrets are protected using a key derived from the login salts instead of a dedicated key. Rotating those salts would make stored secrets unrecoverable.' ) . '</p>';
+			$result['actions']     = '<p>' . __( 'Define the WP_SECRETS_KEY constant in wp-config.php with a dedicated, random 32-byte key, base64-encoded.' ) . '</p>';
+		}
+
+		return $result;
+	}
+
+	/**
 	 * Tests if plugin and theme temporary backup directories are writable or can be created.
 	 *
 	 * @since 6.3.0
@@ -2928,6 +3017,14 @@ class WP_Site_Health {
 				'insecure_registration'        => array(
 					'label' => __( 'Open Registration with privileged default role' ),
 					'test'  => 'insecure_registration',
+				),
+				'secrets_undecryptable'        => array(
+					'label' => __( 'Undecryptable secrets' ),
+					'test'  => 'secrets_undecryptable',
+				),
+				'secrets_salts_fallback'       => array(
+					'label' => __( 'Secrets API key configuration' ),
+					'test'  => 'secrets_salts_fallback',
 				),
 				'search_engine_visibility'     => array(
 					'label' => __( 'Search Engine Visibility' ),
