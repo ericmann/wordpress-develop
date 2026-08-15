@@ -87,6 +87,12 @@ function wp_secrets_current_site_id() {
  * Encryption is always on: there is no configuration, constant, filter,
  * or drop-in that disables it.
  *
+ * Overwriting an existing secret demotes its current value to the
+ * previous slot, discarding whatever was already there. There are
+ * exactly two slots; named version history is out of scope. Keeping
+ * every credential a site has ever held recoverable from a backup
+ * indefinitely would work against the entire reason anyone rotates.
+ *
  * @since 7.2.0
  *
  * @param string $name  Namespaced secret name: 'plugin-slug/secret-name'.
@@ -110,8 +116,16 @@ function wp_set_secret( $name, $value ) {
 		return $master_key;
 	}
 
-	$cipher      = new WP_Secrets_Cipher();
-	$site_id     = wp_secrets_current_site_id();
+	$store   = new WP_Secrets_Option_Store();
+	$cipher  = new WP_Secrets_Cipher();
+	$site_id = wp_secrets_current_site_id();
+
+	$previous_slot = wp_secrets_demote_current_slot( $store->get( $name ), $master_key, $cipher, $name, $site_id );
+
+	if ( is_wp_error( $previous_slot ) ) {
+		return $previous_slot;
+	}
+
 	$encrypted   = $cipher->encrypt( $value, $master_key, $name, 'current', $site_id );
 	$fingerprint = $cipher->fingerprint( $value, $master_key );
 	$now         = time();
@@ -124,14 +138,68 @@ function wp_set_secret( $name, $value ) {
 			'fp'      => $fingerprint,
 			'created' => $now,
 		),
-		'previous'       => null,
+		'previous'       => $previous_slot,
 		'needs_rotation' => false,
 		'updated'        => $now,
 	);
 
-	( new WP_Secrets_Option_Store() )->set( $name, wp_json_encode( $record ) );
+	$store->set( $name, wp_json_encode( $record ) );
 
 	return true;
+}
+
+/**
+ * Re-encrypts an existing record's current slot for the previous slot.
+ *
+ * The AAD binds a slot's ciphertext to its position, so the old current
+ * slot cannot simply be copied into previous: it must be decrypted and
+ * re-encrypted under the previous slot's own AAD.
+ *
+ * @since 7.2.0
+ * @access private
+ *
+ * @param string|null|WP_Error $existing   The existing raw record JSON, as
+ *                                         returned by a WP_Secrets_Store.
+ * @param string               $master_key 32 raw bytes.
+ * @param WP_Secrets_Cipher    $cipher     Cipher instance to use.
+ * @param string               $name       Namespaced secret name.
+ * @param int                  $site_id    Site ID the secret belongs to.
+ * @return array|null|WP_Error The new previous slot, null if there was no
+ *                             existing current slot to demote, or
+ *                             WP_Error if the existing slot exists but
+ *                             cannot be decrypted.
+ */
+function wp_secrets_demote_current_slot( $existing, $master_key, WP_Secrets_Cipher $cipher, $name, $site_id ) {
+	if ( is_wp_error( $existing ) ) {
+		return $existing;
+	}
+
+	if ( ! is_string( $existing ) ) {
+		return null;
+	}
+
+	$existing_record = json_decode( $existing, true );
+
+	if ( ! is_array( $existing_record ) || empty( $existing_record['current']['ct'] ) || empty( $existing_record['current']['nonce'] ) ) {
+		return null;
+	}
+
+	$old_plaintext = $cipher->decrypt( $existing_record['current']['ct'], $existing_record['current']['nonce'], $master_key, $name, 'current', $site_id );
+
+	if ( is_wp_error( $old_plaintext ) ) {
+		return $old_plaintext;
+	}
+
+	$re_encrypted = $cipher->encrypt( $old_plaintext, $master_key, $name, 'previous', $site_id );
+
+	wp_secrets_memzero( $old_plaintext );
+
+	return array(
+		'ct'      => $re_encrypted['ct'],
+		'nonce'   => $re_encrypted['nonce'],
+		'fp'      => $existing_record['current']['fp'],
+		'created' => $existing_record['current']['created'],
+	);
 }
 
 /**
