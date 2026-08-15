@@ -34,6 +34,7 @@
  *              `edit_app_password`, `delete_app_passwords`, `delete_app_password`,
  *              and `update_https` capabilities.
  * @since 6.7.0 Added the `edit_block_binding` capability.
+ * @since 7.2.0 Added the `manage_secrets` and `manage_network_secrets` capabilities.
  *
  * @global array $post_type_meta_caps Used to get post type meta capabilities.
  *
@@ -768,6 +769,19 @@ function map_meta_cap( $cap, $user_id, ...$args ) {
 		case 'manage_network_themes':
 		case 'manage_network_options':
 		case 'upgrade_network':
+			$caps[] = $cap;
+			break;
+		case 'manage_secrets':
+		case 'manage_network_secrets':
+			/*
+			 * Neither capability is aliased to manage_options: a narrower
+			 * capability is the point, and it lets hosts revoke it
+			 * independently. manage_secrets is granted to administrators
+			 * (see populate_roles() and the corresponding upgrade routine).
+			 * manage_network_secrets is never granted to any role; only
+			 * super admins have it, via the blanket multisite grant in
+			 * WP_User::has_cap().
+			 */
 			$caps[] = $cap;
 			break;
 		case 'setup_network':
