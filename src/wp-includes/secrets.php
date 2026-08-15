@@ -256,3 +256,88 @@ function wp_get_secret( $name ) {
 
 	return new WP_Secret( $name, $plaintext, $fingerprint );
 }
+
+/**
+ * Deletes a secret.
+ *
+ * Removes the entire stored record, current and previous slots alike:
+ * there is only one record per name, so there is nothing partial to
+ * leave behind.
+ *
+ * @since 7.2.0
+ *
+ * @param string $name Namespaced secret name.
+ * @return true|WP_Error True on success, WP_Error if it did not exist.
+ */
+function wp_delete_secret( $name ) {
+	$valid_name = wp_secrets_validate_name( $name );
+
+	if ( is_wp_error( $valid_name ) ) {
+		return $valid_name;
+	}
+
+	$store    = new WP_Secrets_Option_Store();
+	$existing = $store->get( $name );
+
+	if ( is_wp_error( $existing ) ) {
+		return $existing;
+	}
+
+	if ( null === $existing ) {
+		return new WP_Error( 'secret_not_found', __( 'This secret does not exist.' ) );
+	}
+
+	return $store->delete( $name );
+}
+
+/**
+ * Lists metadata for stored secrets. Never values.
+ *
+ * @since 7.2.0
+ *
+ * @param string $namespace Optional. Restrict results to one namespace.
+ *                          Default '' (all namespaces).
+ * @return array[]|WP_Error Each entry: name, fingerprint,
+ *                          previous_fingerprint, created, updated,
+ *                          needs_rotation.
+ */
+function wp_list_secrets( $namespace = '' ) { // phpcs:ignore Universal.NamingConventions.NoReservedKeywordParameterNames.namespaceFound
+	$store = new WP_Secrets_Option_Store();
+	$names = $store->list_names();
+
+	if ( is_wp_error( $names ) ) {
+		return $names;
+	}
+
+	$prefix  = '' === $namespace ? '' : $namespace . '/';
+	$results = array();
+
+	foreach ( $names as $name ) {
+		if ( '' !== $prefix && 0 !== strpos( $name, $prefix ) ) {
+			continue;
+		}
+
+		$raw = $store->get( $name );
+
+		if ( is_wp_error( $raw ) || null === $raw ) {
+			continue;
+		}
+
+		$record = json_decode( $raw, true );
+
+		if ( ! is_array( $record ) ) {
+			continue;
+		}
+
+		$results[] = array(
+			'name'                 => $name,
+			'fingerprint'          => isset( $record['current']['fp'] ) ? $record['current']['fp'] : '',
+			'previous_fingerprint' => isset( $record['previous']['fp'] ) ? $record['previous']['fp'] : '',
+			'created'              => isset( $record['current']['created'] ) ? $record['current']['created'] : null,
+			'updated'              => isset( $record['updated'] ) ? $record['updated'] : null,
+			'needs_rotation'       => ! empty( $record['needs_rotation'] ),
+		);
+	}
+
+	return $results;
+}
