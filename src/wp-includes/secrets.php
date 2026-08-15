@@ -41,3 +41,31 @@ function wp_secrets_validate_name( $name ) {
 
 	return true;
 }
+
+/**
+ * Best-effort zeroing of a string containing sensitive data.
+ *
+ * Prefers the `sodium_memzero()` extension function, which wipes the
+ * underlying buffer in place. That function throws a `SodiumException`
+ * when ext-sodium is not loaded, because sodium_compat defines the
+ * related constants but cannot implement it as a userland polyfill, so
+ * it is never called unless the real extension is present.
+ *
+ * When ext-sodium is unavailable, the fallback overwrites the variable
+ * with null bytes. This is best-effort only: PHP's copy-on-write
+ * semantics mean earlier copies of the string may already exist
+ * elsewhere in memory. Callers must not treat this as a guarantee of
+ * erasure.
+ *
+ * @since 7.2.0
+ *
+ * @param string $value String to zero, by reference.
+ */
+function wp_secrets_memzero( &$value ) {
+	if ( function_exists( 'sodium_memzero' ) && extension_loaded( 'sodium' ) ) {
+		sodium_memzero( $value );
+		return;
+	}
+
+	$value = str_repeat( "\0", strlen( $value ) );
+}
