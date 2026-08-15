@@ -8,6 +8,27 @@
  */
 
 /**
+ * Checks whether an option name belongs to the Secrets API's reserved
+ * storage namespace.
+ *
+ * Secrets API storage (`_wp_secret_*` records, `_wp_secrets_*` internals
+ * like the wrapped master key) must never appear on a disclosure
+ * surface: the All Options screen, REST settings, or an export. This is
+ * the single predicate every such surface should consult.
+ *
+ * @since 7.2.0
+ *
+ * @param string $option_name The option name to check.
+ * @return bool
+ */
+function wp_secrets_is_reserved_option_name( $option_name ) {
+	return is_string( $option_name ) && (
+		str_starts_with( $option_name, '_wp_secret_' ) ||
+		str_starts_with( $option_name, '_wp_secrets_' )
+	);
+}
+
+/**
  * Validates a Secrets API name against the naming grammar.
  *
  * Names take the form `namespace/name`, where both segments match

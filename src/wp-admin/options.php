@@ -405,6 +405,11 @@ foreach ( (array) $options as $option ) :
 		continue;
 	}
 
+	if ( wp_secrets_is_reserved_option_name( $option->option_name ) ) {
+		// Secrets API storage must never render on this screen, masked or otherwise.
+		continue;
+	}
+
 	if ( 'home' === $option->option_name && defined( 'WP_HOME' ) ) {
 		$disabled = true;
 	}
