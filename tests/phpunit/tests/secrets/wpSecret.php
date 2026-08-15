@@ -149,6 +149,16 @@ class Tests_Secrets_WpSecret extends WP_UnitTestCase {
 	/**
 	 * @ticket 64789
 	 */
+	public function test_clone_throws() {
+		$secret = new WP_Secret( self::NAME, self::PLAINTEXT, self::FINGERPRINT );
+
+		$this->expectException( LogicException::class );
+		clone $secret;
+	}
+
+	/**
+	 * @ticket 64789
+	 */
 	public function test_class_is_final() {
 		$reflection = new ReflectionClass( WP_Secret::class );
 

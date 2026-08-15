@@ -197,4 +197,21 @@ final class WP_Secret implements JsonSerializable {
 	public function __unserialize( $data ) {
 		throw new LogicException( 'WP_Secret cannot be unserialized.' );
 	}
+
+	/**
+	 * Prevents cloning.
+	 *
+	 * WP_Object_Cache::set() clones any object value before storing it.
+	 * Without this guard, that clone would succeed silently and a
+	 * WP_Secret - plaintext included - would end up sitting in the
+	 * object cache, which on shared hosting is often infrastructure
+	 * shared with other tenants.
+	 *
+	 * @since 7.2.0
+	 *
+	 * @throws LogicException Always.
+	 */
+	public function __clone() {
+		throw new LogicException( 'WP_Secret cannot be cloned.' );
+	}
 }
