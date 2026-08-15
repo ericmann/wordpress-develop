@@ -890,7 +890,7 @@ function upgrade_all() {
 		upgrade_700();
 	}
 
-	if ( $wp_current_db_version < 61833 ) {
+	if ( $wp_current_db_version < 61900 ) {
 		upgrade_720();
 	}
 
@@ -2525,7 +2525,7 @@ function upgrade_700() {
 function upgrade_720() {
 	global $wp_current_db_version;
 
-	if ( $wp_current_db_version < 61833 ) {
+	if ( $wp_current_db_version < 61900 ) {
 		populate_roles_720();
 	}
 }
