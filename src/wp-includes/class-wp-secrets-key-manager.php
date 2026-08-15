@@ -109,12 +109,20 @@ class WP_Secrets_Key_Manager {
 	/**
 	 * Returns the site's master key, generating and persisting one if needed.
 	 *
-	 * If the current site key fails to unwrap a stored master key, this
-	 * retries with the previous site key. On success, the master key is
-	 * transparently re-wrapped under the current key and persisted (one
-	 * option write) so the retry is not needed again. If both keys fail,
-	 * nothing is written: the stored record is left exactly as it was,
-	 * so no data is destroyed by a rotation that has not finished yet.
+	 * If a `secrets.php` drop-in has registered a key provider via
+	 * `$GLOBALS['wp_secrets_key_provider']`, this delegates to it
+	 * entirely via wrap()/unwrap() and returns whatever it returns,
+	 * unchanged, on failure - no fallback to the config-based default.
+	 * A drop-in provider is responsible for its own rotation story, if
+	 * any; this class does not assume it has a "previous key" concept.
+	 *
+	 * Otherwise, this uses the config-based default: if the current site
+	 * key fails to unwrap a stored master key, retries with the previous
+	 * site key. On success, the master key is transparently re-wrapped
+	 * under the current key and persisted (one option write) so the
+	 * retry is not needed again. If both keys fail, nothing is written:
+	 * the stored record is left exactly as it was, so no data is
+	 * destroyed by a rotation that has not finished yet.
 	 *
 	 * @since 7.2.0
 	 *
@@ -124,13 +132,17 @@ class WP_Secrets_Key_Manager {
 	 *                         previous site key.
 	 */
 	public function get_master_key() {
+		if ( isset( $GLOBALS['wp_secrets_key_provider'] ) && $GLOBALS['wp_secrets_key_provider'] instanceof WP_Secrets_Key_Provider ) {
+			return $this->get_master_key_via_drop_in( $GLOBALS['wp_secrets_key_provider'] );
+		}
+
 		$site_key = $this->key_provider->get_site_key();
 
 		if ( is_wp_error( $site_key ) ) {
 			return $site_key;
 		}
 
-		$stored = $this->network ? get_site_option( self::NETWORK_ROOT_KEY_OPTION ) : get_option( self::MASTER_KEY_OPTION );
+		$stored = $this->read_stored_value();
 
 		if ( false === $stored ) {
 			return $this->generate_master_key( $site_key );
@@ -143,6 +155,59 @@ class WP_Secrets_Key_Manager {
 		}
 
 		return $this->retry_with_previous_site_key( $stored, $site_key, $unwrapped );
+	}
+
+	/**
+	 * Returns the master key using a drop-in-provided key provider.
+	 *
+	 * @since 7.2.0
+	 *
+	 * @param WP_Secrets_Key_Provider $provider The drop-in key provider.
+	 * @return string|WP_Error 32 raw bytes, or WP_Error.
+	 */
+	private function get_master_key_via_drop_in( WP_Secrets_Key_Provider $provider ) {
+		$stored = $this->read_stored_value();
+
+		if ( false === $stored ) {
+			$master_key = random_bytes( 32 );
+			$wrapped    = $provider->wrap( $master_key );
+
+			if ( is_wp_error( $wrapped ) ) {
+				return $wrapped;
+			}
+
+			$this->write_stored_value( $wrapped );
+
+			return $master_key;
+		}
+
+		return $provider->unwrap( $stored );
+	}
+
+	/**
+	 * Reads the raw stored value for whichever key this instance manages.
+	 *
+	 * @since 7.2.0
+	 *
+	 * @return string|false The raw stored value, or false if absent.
+	 */
+	private function read_stored_value() {
+		return $this->network ? get_site_option( self::NETWORK_ROOT_KEY_OPTION ) : get_option( self::MASTER_KEY_OPTION );
+	}
+
+	/**
+	 * Persists the raw wrapped value for whichever key this instance manages.
+	 *
+	 * @since 7.2.0
+	 *
+	 * @param string $wrapped The wrapped value to store.
+	 */
+	private function write_stored_value( $wrapped ) {
+		if ( $this->network ) {
+			update_site_option( self::NETWORK_ROOT_KEY_OPTION, $wrapped );
+		} else {
+			update_option( self::MASTER_KEY_OPTION, $wrapped, false );
+		}
 	}
 
 	/**
@@ -209,11 +274,7 @@ class WP_Secrets_Key_Manager {
 			'ct'    => base64_encode( $ciphertext ),
 		);
 
-		if ( $this->network ) {
-			update_site_option( self::NETWORK_ROOT_KEY_OPTION, wp_json_encode( $record ) );
-		} else {
-			update_option( self::MASTER_KEY_OPTION, wp_json_encode( $record ), false );
-		}
+		$this->write_stored_value( wp_json_encode( $record ) );
 	}
 
 	/**

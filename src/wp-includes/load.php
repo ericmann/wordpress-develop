@@ -932,6 +932,25 @@ function wp_start_object_cache() {
 }
 
 /**
+ * Loads the `secrets.php` drop-in, if present.
+ *
+ * Same relationship to the Secrets API that `object-cache.php` has to
+ * options: the default storage and key-wrapping backends are
+ * replaceable, but not removable. A drop-in registers by assigning
+ * `$GLOBALS['wp_secrets_store']` and/or
+ * `$GLOBALS['wp_secrets_key_provider']`; either, both, or neither may
+ * be overridden. See wp_secrets_get_store() and
+ * WP_Secrets_Key_Manager::get_master_key().
+ *
+ * @since 7.2.0
+ */
+function wp_start_secrets_dropin() {
+	if ( file_exists( WP_CONTENT_DIR . '/secrets.php' ) ) {
+		require_once WP_CONTENT_DIR . '/secrets.php';
+	}
+}
+
+/**
  * Redirects to the installer if WordPress is not installed.
  *
  * Dies with an error message when Multisite is enabled.

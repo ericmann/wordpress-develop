@@ -8,6 +8,46 @@
  */
 
 /**
+ * Resolves the active Secrets API storage backend.
+ *
+ * A `secrets.php` drop-in registers by assigning
+ * `$GLOBALS['wp_secrets_store']`. Core's default,
+ * WP_Secrets_Option_Store, is used when that global is unset.
+ *
+ * @since 7.2.0
+ * @access private
+ *
+ * @return WP_Secrets_Store
+ */
+function wp_secrets_get_store() {
+	if ( isset( $GLOBALS['wp_secrets_store'] ) && $GLOBALS['wp_secrets_store'] instanceof WP_Secrets_Store ) {
+		return $GLOBALS['wp_secrets_store'];
+	}
+
+	return new WP_Secrets_Option_Store();
+}
+
+/**
+ * Reports which Secrets API drop-in axes are currently overridden.
+ *
+ * The storage backend and the key provider are independent axes: a
+ * `secrets.php` drop-in may override either, both, or neither.
+ *
+ * @since 7.2.0
+ *
+ * @return bool[] {
+ *     @type bool $store        Whether the storage backend is overridden.
+ *     @type bool $key_provider Whether the key provider is overridden.
+ * }
+ */
+function wp_using_secrets_dropin() {
+	return array(
+		'store'        => isset( $GLOBALS['wp_secrets_store'] ) && $GLOBALS['wp_secrets_store'] instanceof WP_Secrets_Store,
+		'key_provider' => isset( $GLOBALS['wp_secrets_key_provider'] ) && $GLOBALS['wp_secrets_key_provider'] instanceof WP_Secrets_Key_Provider,
+	);
+}
+
+/**
  * Checks whether an option name belongs to the Secrets API's reserved
  * storage namespace.
  *
@@ -226,7 +266,7 @@ function _wp_secrets_set( $name, $value, $network ) {
 		return $master_key;
 	}
 
-	$store    = new WP_Secrets_Option_Store();
+	$store    = wp_secrets_get_store();
 	$cipher   = new WP_Secrets_Cipher();
 	$site_id  = wp_secrets_current_site_id( $network );
 	$existing = $store->get( $name, $network );
@@ -397,7 +437,7 @@ function _wp_secrets_get( $name, $network ) {
 		return $valid_name;
 	}
 
-	$raw = ( new WP_Secrets_Option_Store() )->get( $name, $network );
+	$raw = wp_secrets_get_store()->get( $name, $network );
 
 	if ( is_wp_error( $raw ) || null === $raw ) {
 		return $raw;
@@ -488,7 +528,7 @@ function _wp_secrets_delete( $name, $network ) {
 		return $valid_name;
 	}
 
-	$store    = new WP_Secrets_Option_Store();
+	$store    = wp_secrets_get_store();
 	$existing = $store->get( $name, $network );
 
 	if ( is_wp_error( $existing ) ) {
@@ -565,7 +605,7 @@ function wp_list_network_secrets( $namespace = '' ) { // phpcs:ignore Universal.
  *                          needs_rotation.
  */
 function _wp_secrets_list( $namespace, $network ) { // phpcs:ignore Universal.NamingConventions.NoReservedKeywordParameterNames.namespaceFound
-	$store = new WP_Secrets_Option_Store();
+	$store = wp_secrets_get_store();
 	$names = $store->list_names( $network );
 
 	if ( is_wp_error( $names ) ) {

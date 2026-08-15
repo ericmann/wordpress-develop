@@ -150,6 +150,15 @@ wp_set_wpdb_vars();
 // Start the WordPress object cache, or an external object cache if the drop-in is present.
 wp_start_object_cache();
 
+/*
+ * Load the Secrets API interfaces a secrets.php drop-in's classes implement,
+ * then the drop-in itself, if present, so it can register a custom store
+ * and/or key provider before anything else in the request runs.
+ */
+require ABSPATH . WPINC . '/interface-wp-secrets-store.php';
+require ABSPATH . WPINC . '/interface-wp-secrets-keyprovider.php';
+wp_start_secrets_dropin();
+
 // Attach the default filters.
 require ABSPATH . WPINC . '/default-filters.php';
 
@@ -312,7 +321,6 @@ require ABSPATH . WPINC . '/class-wp-secret.php';
 require ABSPATH . WPINC . '/class-wp-secrets-config-key-provider.php';
 require ABSPATH . WPINC . '/class-wp-secrets-key-manager.php';
 require ABSPATH . WPINC . '/class-wp-secrets-cipher.php';
-require ABSPATH . WPINC . '/interface-wp-secrets-store.php';
 require ABSPATH . WPINC . '/class-wp-secrets-option-store.php';
 require ABSPATH . WPINC . '/secrets.php';
 require ABSPATH . WPINC . '/abilities-api/class-wp-ability-category.php';
