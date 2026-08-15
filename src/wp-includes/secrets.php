@@ -69,3 +69,122 @@ function wp_secrets_memzero( &$value ) {
 
 	$value = str_repeat( "\0", strlen( $value ) );
 }
+
+/**
+ * Resolves the site ID a site-level secret's AAD should be bound to.
+ *
+ * @since 7.2.0
+ *
+ * @return int The current blog ID on multisite, 1 otherwise.
+ */
+function wp_secrets_current_site_id() {
+	return is_multisite() ? get_current_blog_id() : 1;
+}
+
+/**
+ * Sets a secret's value, creating or overwriting it.
+ *
+ * Encryption is always on: there is no configuration, constant, filter,
+ * or drop-in that disables it.
+ *
+ * @since 7.2.0
+ *
+ * @param string $name  Namespaced secret name: 'plugin-slug/secret-name'.
+ * @param string $value Plaintext. Non-empty.
+ * @return true|WP_Error True on success, WP_Error otherwise.
+ */
+function wp_set_secret( $name, $value ) {
+	$valid_name = wp_secrets_validate_name( $name );
+
+	if ( is_wp_error( $valid_name ) ) {
+		return $valid_name;
+	}
+
+	if ( ! is_string( $value ) || '' === $value ) {
+		return new WP_Error( 'secret_empty_value', __( 'Secret values must be non-empty strings.' ) );
+	}
+
+	$master_key = ( new WP_Secrets_Key_Manager() )->get_master_key();
+
+	if ( is_wp_error( $master_key ) ) {
+		return $master_key;
+	}
+
+	$cipher      = new WP_Secrets_Cipher();
+	$site_id     = wp_secrets_current_site_id();
+	$encrypted   = $cipher->encrypt( $value, $master_key, $name, 'current', $site_id );
+	$fingerprint = $cipher->fingerprint( $value, $master_key );
+	$now         = time();
+
+	$record = array(
+		'v'              => 1,
+		'current'        => array(
+			'ct'      => $encrypted['ct'],
+			'nonce'   => $encrypted['nonce'],
+			'fp'      => $fingerprint,
+			'created' => $now,
+		),
+		'previous'       => null,
+		'needs_rotation' => false,
+		'updated'        => $now,
+	);
+
+	( new WP_Secrets_Option_Store() )->set( $name, wp_json_encode( $record ) );
+
+	return true;
+}
+
+/**
+ * Retrieves a secret's value.
+ *
+ * @since 7.2.0
+ *
+ * @param string $name Namespaced secret name.
+ * @return WP_Secret|null|WP_Error WP_Secret if it exists and decrypts,
+ *                                 null if it does not exist, WP_Error if
+ *                                 it exists but does not decrypt.
+ */
+function wp_get_secret( $name ) {
+	$valid_name = wp_secrets_validate_name( $name );
+
+	if ( is_wp_error( $valid_name ) ) {
+		return $valid_name;
+	}
+
+	$raw = ( new WP_Secrets_Option_Store() )->get( $name );
+
+	if ( is_wp_error( $raw ) || null === $raw ) {
+		return $raw;
+	}
+
+	$record = json_decode( $raw, true );
+
+	if ( ! is_array( $record ) || 1 !== ( isset( $record['v'] ) ? $record['v'] : null )
+		|| ! isset( $record['current']['ct'], $record['current']['nonce'] )
+	) {
+		return new WP_Error( 'secret_decryption_failed', __( 'The stored secret record is malformed.' ) );
+	}
+
+	$master_key = ( new WP_Secrets_Key_Manager() )->get_master_key();
+
+	if ( is_wp_error( $master_key ) ) {
+		return $master_key;
+	}
+
+	$plaintext = ( new WP_Secrets_Cipher() )->decrypt(
+		$record['current']['ct'],
+		$record['current']['nonce'],
+		$master_key,
+		$name,
+		'current',
+		wp_secrets_current_site_id()
+	);
+
+	if ( is_wp_error( $plaintext ) ) {
+		return $plaintext;
+	}
+
+	$fingerprint = isset( $record['current']['fp'] ) ? $record['current']['fp'] : '';
+
+	return new WP_Secret( $name, $plaintext, $fingerprint );
+}
