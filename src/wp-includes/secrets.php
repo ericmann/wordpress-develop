@@ -92,14 +92,66 @@ function wp_secrets_memzero( &$value ) {
 }
 
 /**
- * Resolves the site ID a site-level secret's AAD should be bound to.
+ * Resolves the ID a secret's AAD should be bound to.
  *
  * @since 7.2.0
  *
- * @return int The current blog ID on multisite, 1 otherwise.
+ * @param bool $network Optional. Whether to resolve the network keyspace's
+ *                       ID rather than the site's. Default false.
+ * @return int For a site-level secret, the current blog ID on multisite,
+ *             1 otherwise. For a network-level secret, the current
+ *             network ID.
  */
-function wp_secrets_current_site_id() {
+function wp_secrets_current_site_id( $network = false ) {
+	if ( $network ) {
+		return get_current_network_id();
+	}
+
 	return is_multisite() ? get_current_blog_id() : 1;
+}
+
+/**
+ * Resolves the master key used to encrypt site-level or network-level secrets.
+ *
+ * On a single-site install, or for the network keyspace, this is a
+ * random 32-byte key generated once and wrapped under the site key
+ * (see WP_Secrets_Key_Manager).
+ *
+ * On multisite, a site's master key is instead derived from the
+ * network root key and the site's own ID:
+ * `crypto_kdf_derive_from_key(32, $site_id, "wpsecret", $network_root_key)`.
+ * A network of 500 sites then has one wrapped key to rotate, not 500:
+ * rotating `WP_SECRETS_KEY` re-wraps the network root key once, and
+ * every site's derived master key is unchanged, because the network
+ * root key's raw bytes never change - only their wrapping does.
+ *
+ * @since 7.2.0
+ * @access private
+ *
+ * @param bool $network Optional. Whether to resolve the network's own
+ *                       master key rather than a site's. Default false.
+ * @return string|WP_Error 32 raw bytes, or WP_Error.
+ */
+function wp_secrets_resolve_master_key( $network = false ) {
+	if ( $network ) {
+		return ( new WP_Secrets_Key_Manager( null, true ) )->get_master_key();
+	}
+
+	if ( ! is_multisite() ) {
+		return ( new WP_Secrets_Key_Manager() )->get_master_key();
+	}
+
+	$network_root_key = ( new WP_Secrets_Key_Manager( null, true ) )->get_master_key();
+
+	if ( is_wp_error( $network_root_key ) ) {
+		return $network_root_key;
+	}
+
+	$site_master_key = sodium_crypto_kdf_derive_from_key( 32, get_current_blog_id(), 'wpsecret', $network_root_key );
+
+	wp_secrets_memzero( $network_root_key );
+
+	return $site_master_key;
 }
 
 /**
@@ -121,6 +173,43 @@ function wp_secrets_current_site_id() {
  * @return true|WP_Error True on success, WP_Error otherwise.
  */
 function wp_set_secret( $name, $value ) {
+	return _wp_secrets_set( $name, $value, false );
+}
+
+/**
+ * Sets a network-level secret's value, creating or overwriting it.
+ *
+ * On a single-site install this proxies directly to wp_set_secret():
+ * there is no separate network keyspace to speak of. On multisite it
+ * operates on the network keyspace instead of the current site's -
+ * there is no implicit fallback between the two in either direction.
+ *
+ * @since 7.2.0
+ *
+ * @param string $name  Namespaced secret name: 'plugin-slug/secret-name'.
+ * @param string $value Plaintext. Non-empty.
+ * @return true|WP_Error True on success, WP_Error otherwise.
+ */
+function wp_set_network_secret( $name, $value ) {
+	if ( ! is_multisite() ) {
+		return wp_set_secret( $name, $value );
+	}
+
+	return _wp_secrets_set( $name, $value, true );
+}
+
+/**
+ * Implementation shared by wp_set_secret() and wp_set_network_secret().
+ *
+ * @since 7.2.0
+ * @access private
+ *
+ * @param string $name    Namespaced secret name.
+ * @param string $value   Plaintext. Non-empty.
+ * @param bool   $network Whether to operate on the network keyspace.
+ * @return true|WP_Error True on success, WP_Error otherwise.
+ */
+function _wp_secrets_set( $name, $value, $network ) {
 	$valid_name = wp_secrets_validate_name( $name );
 
 	if ( is_wp_error( $valid_name ) ) {
@@ -131,7 +220,7 @@ function wp_set_secret( $name, $value ) {
 		return new WP_Error( 'secret_empty_value', __( 'Secret values must be non-empty strings.' ) );
 	}
 
-	$master_key = ( new WP_Secrets_Key_Manager() )->get_master_key();
+	$master_key = wp_secrets_resolve_master_key( $network );
 
 	if ( is_wp_error( $master_key ) ) {
 		return $master_key;
@@ -139,8 +228,8 @@ function wp_set_secret( $name, $value ) {
 
 	$store    = new WP_Secrets_Option_Store();
 	$cipher   = new WP_Secrets_Cipher();
-	$site_id  = wp_secrets_current_site_id();
-	$existing = $store->get( $name );
+	$site_id  = wp_secrets_current_site_id( $network );
+	$existing = $store->get( $name, $network );
 
 	$previous_slot = wp_secrets_demote_current_slot( $existing, $master_key, $cipher, $name, $site_id );
 
@@ -176,7 +265,7 @@ function wp_set_secret( $name, $value ) {
 		'updated'        => $now,
 	);
 
-	$store->set( $name, wp_json_encode( $record ) );
+	$store->set( $name, wp_json_encode( $record ), $network );
 
 	/**
 	 * Fires when a secret is created, updated, rotated, or deleted.
@@ -264,13 +353,51 @@ function wp_secrets_demote_current_slot( $existing, $master_key, WP_Secrets_Ciph
  *                                 it exists but does not decrypt.
  */
 function wp_get_secret( $name ) {
+	return _wp_secrets_get( $name, false );
+}
+
+/**
+ * Retrieves a network-level secret's value.
+ *
+ * On a single-site install this proxies directly to wp_get_secret().
+ * On multisite it operates on the network keyspace only: a secret set
+ * with wp_set_secret() is not found here, and vice versa.
+ *
+ * @since 7.2.0
+ *
+ * @param string $name Namespaced secret name.
+ * @return WP_Secret|null|WP_Error WP_Secret if it exists and decrypts,
+ *                                 null if it does not exist, WP_Error if
+ *                                 it exists but does not decrypt.
+ */
+function wp_get_network_secret( $name ) {
+	if ( ! is_multisite() ) {
+		return wp_get_secret( $name );
+	}
+
+	return _wp_secrets_get( $name, true );
+}
+
+/**
+ * Implementation shared by wp_get_secret() and wp_get_network_secret().
+ *
+ * @since 7.2.0
+ * @access private
+ *
+ * @param string $name    Namespaced secret name.
+ * @param bool   $network Whether to operate on the network keyspace.
+ * @return WP_Secret|null|WP_Error WP_Secret if it exists and decrypts,
+ *                                 null if it does not exist, WP_Error if
+ *                                 it exists but does not decrypt.
+ */
+function _wp_secrets_get( $name, $network ) {
 	$valid_name = wp_secrets_validate_name( $name );
 
 	if ( is_wp_error( $valid_name ) ) {
 		return $valid_name;
 	}
 
-	$raw = ( new WP_Secrets_Option_Store() )->get( $name );
+	$raw = ( new WP_Secrets_Option_Store() )->get( $name, $network );
 
 	if ( is_wp_error( $raw ) || null === $raw ) {
 		return $raw;
@@ -284,7 +411,7 @@ function wp_get_secret( $name ) {
 		return new WP_Error( 'secret_decryption_failed', __( 'The stored secret record is malformed.' ) );
 	}
 
-	$master_key = ( new WP_Secrets_Key_Manager() )->get_master_key();
+	$master_key = wp_secrets_resolve_master_key( $network );
 
 	if ( is_wp_error( $master_key ) ) {
 		return $master_key;
@@ -296,7 +423,7 @@ function wp_get_secret( $name ) {
 		$master_key,
 		$name,
 		'current',
-		wp_secrets_current_site_id()
+		wp_secrets_current_site_id( $network )
 	);
 
 	if ( is_wp_error( $plaintext ) ) {
@@ -321,6 +448,40 @@ function wp_get_secret( $name ) {
  * @return true|WP_Error True on success, WP_Error if it did not exist.
  */
 function wp_delete_secret( $name ) {
+	return _wp_secrets_delete( $name, false );
+}
+
+/**
+ * Deletes a network-level secret.
+ *
+ * On a single-site install this proxies directly to
+ * wp_delete_secret(). On multisite it operates on the network
+ * keyspace only.
+ *
+ * @since 7.2.0
+ *
+ * @param string $name Namespaced secret name.
+ * @return true|WP_Error True on success, WP_Error if it did not exist.
+ */
+function wp_delete_network_secret( $name ) {
+	if ( ! is_multisite() ) {
+		return wp_delete_secret( $name );
+	}
+
+	return _wp_secrets_delete( $name, true );
+}
+
+/**
+ * Implementation shared by wp_delete_secret() and wp_delete_network_secret().
+ *
+ * @since 7.2.0
+ * @access private
+ *
+ * @param string $name    Namespaced secret name.
+ * @param bool   $network Whether to operate on the network keyspace.
+ * @return true|WP_Error True on success, WP_Error if it did not exist.
+ */
+function _wp_secrets_delete( $name, $network ) {
 	$valid_name = wp_secrets_validate_name( $name );
 
 	if ( is_wp_error( $valid_name ) ) {
@@ -328,7 +489,7 @@ function wp_delete_secret( $name ) {
 	}
 
 	$store    = new WP_Secrets_Option_Store();
-	$existing = $store->get( $name );
+	$existing = $store->get( $name, $network );
 
 	if ( is_wp_error( $existing ) ) {
 		return $existing;
@@ -338,7 +499,7 @@ function wp_delete_secret( $name ) {
 		return new WP_Error( 'secret_not_found', __( 'This secret does not exist.' ) );
 	}
 
-	$deleted = $store->delete( $name );
+	$deleted = $store->delete( $name, $network );
 
 	if ( is_wp_error( $deleted ) ) {
 		return $deleted;
@@ -365,8 +526,47 @@ function wp_delete_secret( $name ) {
  *                          needs_rotation.
  */
 function wp_list_secrets( $namespace = '' ) { // phpcs:ignore Universal.NamingConventions.NoReservedKeywordParameterNames.namespaceFound
+	return _wp_secrets_list( $namespace, false );
+}
+
+/**
+ * Lists metadata for stored network-level secrets. Never values.
+ *
+ * On a single-site install this proxies directly to
+ * wp_list_secrets(). On multisite it operates on the network keyspace
+ * only.
+ *
+ * @since 7.2.0
+ *
+ * @param string $namespace Optional. Restrict results to one namespace.
+ *                          Default '' (all namespaces).
+ * @return array[]|WP_Error Each entry: name, fingerprint,
+ *                          previous_fingerprint, created, updated,
+ *                          needs_rotation.
+ */
+function wp_list_network_secrets( $namespace = '' ) { // phpcs:ignore Universal.NamingConventions.NoReservedKeywordParameterNames.namespaceFound
+	if ( ! is_multisite() ) {
+		return wp_list_secrets( $namespace );
+	}
+
+	return _wp_secrets_list( $namespace, true );
+}
+
+/**
+ * Implementation shared by wp_list_secrets() and wp_list_network_secrets().
+ *
+ * @since 7.2.0
+ * @access private
+ *
+ * @param string $namespace Restrict results to one namespace, '' for all.
+ * @param bool   $network   Whether to operate on the network keyspace.
+ * @return array[]|WP_Error Each entry: name, fingerprint,
+ *                          previous_fingerprint, created, updated,
+ *                          needs_rotation.
+ */
+function _wp_secrets_list( $namespace, $network ) { // phpcs:ignore Universal.NamingConventions.NoReservedKeywordParameterNames.namespaceFound
 	$store = new WP_Secrets_Option_Store();
-	$names = $store->list_names();
+	$names = $store->list_names( $network );
 
 	if ( is_wp_error( $names ) ) {
 		return $names;
@@ -380,7 +580,7 @@ function wp_list_secrets( $namespace = '' ) { // phpcs:ignore Universal.NamingCo
 			continue;
 		}
 
-		$raw = $store->get( $name );
+		$raw = $store->get( $name, $network );
 
 		if ( is_wp_error( $raw ) || null === $raw ) {
 			continue;

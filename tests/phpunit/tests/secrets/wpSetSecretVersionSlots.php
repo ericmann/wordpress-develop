@@ -93,7 +93,7 @@ class Tests_Secrets_WpSetSecretVersionSlots extends WP_UnitTestCase {
 	 */
 	private function decrypt_previous_slot() {
 		$record     = $this->get_record();
-		$master_key = ( new WP_Secrets_Key_Manager() )->get_master_key();
+		$master_key = wp_secrets_resolve_master_key();
 
 		return ( new WP_Secrets_Cipher() )->decrypt(
 			$record['previous']['ct'],

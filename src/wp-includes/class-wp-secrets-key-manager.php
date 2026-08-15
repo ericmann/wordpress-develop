@@ -8,13 +8,22 @@
  */
 
 /**
- * Manages the lifecycle of the Secrets API per-site master key.
+ * Manages the lifecycle of a Secrets API master key.
  *
  * Individual secrets are encrypted under a random 32-byte master key,
  * not directly under the site key. The site key only wraps the master
  * key, so rotating `WP_SECRETS_KEY` re-wraps one value rather than
  * rewriting every stored secret. AWS KMS documents the same envelope
  * pattern for client-side encryption, for the same reason.
+ *
+ * The same lifecycle - generate once, wrap under the site key, retry
+ * with the previous key on rotation - applies to two different keys:
+ * the per-site master key (`$network = false`), stored as a site
+ * option, and the network root key (`$network = true`), stored as
+ * network meta. A network of 500 sites derives each site's master key
+ * from the one network root key rather than storing 500 independently
+ * wrapped keys, so rotating `WP_SECRETS_KEY` re-wraps one value
+ * network-wide, not one per site.
  *
  * This is an internal class with no public function wrapper: it is used
  * by the Secrets API cipher layer, not called directly by plugins.
@@ -25,7 +34,7 @@
 class WP_Secrets_Key_Manager {
 
 	/**
-	 * Option name for the wrapped master key.
+	 * Option name for the wrapped per-site master key.
 	 *
 	 * @since 7.2.0
 	 * @var string
@@ -33,7 +42,15 @@ class WP_Secrets_Key_Manager {
 	const MASTER_KEY_OPTION = '_wp_secrets_master_key';
 
 	/**
-	 * AAD binding the wrapped master key to its purpose.
+	 * Network meta key for the wrapped network root key.
+	 *
+	 * @since 7.2.0
+	 * @var string
+	 */
+	const NETWORK_ROOT_KEY_OPTION = '_wp_secrets_network_root_key';
+
+	/**
+	 * AAD binding the wrapped per-site master key to its purpose.
 	 *
 	 * Encrypting the master key under the same AAD used for anything
 	 * else would let a wrapped master key record be swapped in wherever
@@ -45,6 +62,19 @@ class WP_Secrets_Key_Manager {
 	const MASTER_KEY_AAD = 'wp-secrets-master-key-v1';
 
 	/**
+	 * AAD binding the wrapped network root key to its purpose.
+	 *
+	 * Distinct from MASTER_KEY_AAD so a wrapped network root key cannot
+	 * be swapped into a site's wrapped master key option, or vice versa,
+	 * even where both happen to be wrapped under the same site key (the
+	 * salts fallback derives the same key network-wide).
+	 *
+	 * @since 7.2.0
+	 * @var string
+	 */
+	const NETWORK_ROOT_KEY_AAD = 'wp-secrets-network-root-key-v1';
+
+	/**
 	 * Provides the site key that wraps the master key.
 	 *
 	 * @since 7.2.0
@@ -53,14 +83,27 @@ class WP_Secrets_Key_Manager {
 	private $key_provider;
 
 	/**
+	 * Whether this instance manages the network root key rather than a
+	 * per-site master key.
+	 *
+	 * @since 7.2.0
+	 * @var bool
+	 */
+	private $network;
+
+	/**
 	 * Constructor.
 	 *
 	 * @since 7.2.0
 	 *
 	 * @param WP_Secrets_Config_Key_Provider|null $key_provider Optional. Defaults to a new instance.
+	 * @param bool                                $network      Optional. Whether to manage the network
+	 *                                                           root key rather than the per-site master
+	 *                                                           key. Default false.
 	 */
-	public function __construct( WP_Secrets_Config_Key_Provider $key_provider = null ) {
+	public function __construct( WP_Secrets_Config_Key_Provider $key_provider = null, $network = false ) {
 		$this->key_provider = $key_provider ? $key_provider : new WP_Secrets_Config_Key_Provider();
+		$this->network      = (bool) $network;
 	}
 
 	/**
@@ -87,7 +130,7 @@ class WP_Secrets_Key_Manager {
 			return $site_key;
 		}
 
-		$stored = get_option( self::MASTER_KEY_OPTION );
+		$stored = $this->network ? get_site_option( self::NETWORK_ROOT_KEY_OPTION ) : get_option( self::MASTER_KEY_OPTION );
 
 		if ( false === $stored ) {
 			return $this->generate_master_key( $site_key );
@@ -158,7 +201,7 @@ class WP_Secrets_Key_Manager {
 	 */
 	private function store_master_key( $master_key, $site_key ) {
 		$nonce      = random_bytes( SODIUM_CRYPTO_AEAD_XCHACHA20POLY1305_IETF_NPUBBYTES );
-		$ciphertext = sodium_crypto_aead_xchacha20poly1305_ietf_encrypt( $master_key, self::MASTER_KEY_AAD, $nonce, $site_key );
+		$ciphertext = sodium_crypto_aead_xchacha20poly1305_ietf_encrypt( $master_key, $this->get_aad(), $nonce, $site_key );
 
 		$record = array(
 			'v'     => 1,
@@ -166,7 +209,22 @@ class WP_Secrets_Key_Manager {
 			'ct'    => base64_encode( $ciphertext ),
 		);
 
-		update_option( self::MASTER_KEY_OPTION, wp_json_encode( $record ), false );
+		if ( $this->network ) {
+			update_site_option( self::NETWORK_ROOT_KEY_OPTION, wp_json_encode( $record ) );
+		} else {
+			update_option( self::MASTER_KEY_OPTION, wp_json_encode( $record ), false );
+		}
+	}
+
+	/**
+	 * Returns the AAD for whichever key this instance manages.
+	 *
+	 * @since 7.2.0
+	 *
+	 * @return string
+	 */
+	private function get_aad() {
+		return $this->network ? self::NETWORK_ROOT_KEY_AAD : self::MASTER_KEY_AAD;
 	}
 
 	/**
@@ -193,7 +251,7 @@ class WP_Secrets_Key_Manager {
 			return new WP_Error( 'secret_decryption_failed', __( 'The stored Secrets API master key record is malformed.' ) );
 		}
 
-		$master_key = sodium_crypto_aead_xchacha20poly1305_ietf_decrypt( $ciphertext, self::MASTER_KEY_AAD, $nonce, $site_key );
+		$master_key = sodium_crypto_aead_xchacha20poly1305_ietf_decrypt( $ciphertext, $this->get_aad(), $nonce, $site_key );
 
 		if ( false === $master_key ) {
 			return new WP_Error( 'secret_decryption_failed', __( 'The stored Secrets API master key could not be decrypted.' ) );
