@@ -137,14 +137,26 @@ function wp_set_secret( $name, $value ) {
 		return $master_key;
 	}
 
-	$store   = new WP_Secrets_Option_Store();
-	$cipher  = new WP_Secrets_Cipher();
-	$site_id = wp_secrets_current_site_id();
+	$store    = new WP_Secrets_Option_Store();
+	$cipher   = new WP_Secrets_Cipher();
+	$site_id  = wp_secrets_current_site_id();
+	$existing = $store->get( $name );
 
-	$previous_slot = wp_secrets_demote_current_slot( $store->get( $name ), $master_key, $cipher, $name, $site_id );
+	$previous_slot = wp_secrets_demote_current_slot( $existing, $master_key, $cipher, $name, $site_id );
 
 	if ( is_wp_error( $previous_slot ) ) {
 		return $previous_slot;
+	}
+
+	$existing_record = is_string( $existing ) ? json_decode( $existing, true ) : null;
+	$old_fingerprint = isset( $existing_record['current']['fp'] ) ? $existing_record['current']['fp'] : '';
+
+	if ( null === $existing_record ) {
+		$action = 'created';
+	} elseif ( ! empty( $existing_record['needs_rotation'] ) ) {
+		$action = 'rotated';
+	} else {
+		$action = 'updated';
 	}
 
 	$encrypted   = $cipher->encrypt( $value, $master_key, $name, 'current', $site_id );
@@ -165,6 +177,24 @@ function wp_set_secret( $name, $value ) {
 	);
 
 	$store->set( $name, wp_json_encode( $record ) );
+
+	/**
+	 * Fires when a secret is created, updated, rotated, or deleted.
+	 *
+	 * This is a write-side signal only: it carries fingerprints, never
+	 * values. Nothing about the arguments passed to a listener on this
+	 * hook can be used to recover a secret's plaintext.
+	 *
+	 * @since 7.2.0
+	 *
+	 * @param string $name             Namespaced secret name.
+	 * @param string $action           'created', 'updated', 'rotated', or 'deleted'.
+	 * @param int    $actor_id         ID of the user who made the change, 0 if none.
+	 * @param int    $timestamp        Unix timestamp of the change.
+	 * @param string $old_fingerprint  The previous value's fingerprint, '' when there was none.
+	 * @param string $new_fingerprint  The new value's fingerprint, '' on delete.
+	 */
+	do_action( 'wp_secret_changed', $name, $action, get_current_user_id(), $now, $old_fingerprint, $fingerprint );
 
 	return true;
 }
@@ -308,7 +338,19 @@ function wp_delete_secret( $name ) {
 		return new WP_Error( 'secret_not_found', __( 'This secret does not exist.' ) );
 	}
 
-	return $store->delete( $name );
+	$deleted = $store->delete( $name );
+
+	if ( is_wp_error( $deleted ) ) {
+		return $deleted;
+	}
+
+	$existing_record = json_decode( $existing, true );
+	$old_fingerprint = isset( $existing_record['current']['fp'] ) ? $existing_record['current']['fp'] : '';
+
+	/** This action is documented in wp-includes/secrets.php */
+	do_action( 'wp_secret_changed', $name, 'deleted', get_current_user_id(), time(), $old_fingerprint, '' );
+
+	return true;
 }
 
 /**
