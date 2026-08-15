@@ -94,4 +94,26 @@ class WP_Secrets_Cipher {
 	private function build_aad( $name, $slot, $site_id ) {
 		return implode( "\0", array( 'wp-secret-v1', $name, $slot, (string) $site_id ) );
 	}
+
+	/**
+	 * Computes the keyed fingerprint of a secret value.
+	 *
+	 * The fingerprint is keyed, not a bare hash. An unkeyed fingerprint of
+	 * a low-entropy secret would be a brute-force oracle for anyone
+	 * holding the database - precisely the attacker this API's threat
+	 * model is defending against. Fingerprints do not survive a master
+	 * key change; they exist to confirm a re-entered value matches
+	 * within one site's key lifetime, not across it.
+	 *
+	 * @since 7.2.0
+	 *
+	 * @param string $plaintext  Secret plaintext.
+	 * @param string $master_key 32 raw bytes.
+	 * @return string 32 lowercase hex characters.
+	 */
+	public function fingerprint( $plaintext, $master_key ) {
+		$fingerprint_key = sodium_crypto_kdf_derive_from_key( 32, 0, 'wpsecfpr', $master_key );
+
+		return bin2hex( sodium_crypto_generichash( $plaintext, $fingerprint_key, 16 ) );
+	}
 }
