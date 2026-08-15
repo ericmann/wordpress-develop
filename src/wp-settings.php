@@ -310,6 +310,7 @@ require ABSPATH . WPINC . '/admin-bar.php';
 require ABSPATH . WPINC . '/class-wp-application-passwords.php';
 require ABSPATH . WPINC . '/class-wp-secret.php';
 require ABSPATH . WPINC . '/class-wp-secrets-config-key-provider.php';
+require ABSPATH . WPINC . '/class-wp-secrets-key-manager.php';
 require ABSPATH . WPINC . '/secrets.php';
 require ABSPATH . WPINC . '/abilities-api/class-wp-ability-category.php';
 require ABSPATH . WPINC . '/abilities-api/class-wp-ability-categories-registry.php';
